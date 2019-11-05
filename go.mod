@@ -1,4 +1,4 @@
-module jonne.org/src/sqlschema
+module github.com/jwp873/sqlschema
 
 go 1.13
 
