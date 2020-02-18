@@ -47,33 +47,46 @@ VALUES(?, ?, ?, ?, ?);
 
 var updateFileMask = regexp.MustCompile(`^[0-9]+\.sql$`)
 
-// Open will create a database/sql Db object using the sqlite3 driver. It will then ensure
-// the db is up-to-date with the DDL .sql files passed in the updates argument. The updates will
-// either succeed completely or fail without modifying the database.
+// Open will open a new database given the driverNam and dataSourceName, and
+// ensure the created db has had all the .sql files from updates applied to it.
 func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, error) {
+	db, err := sql.Open(driverName, dataSourceName)
+	if err != nil {
+		return nil, err
+	}
+	if err := Apply(db, updates); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// Apply will ensure the given db has had all the .sql files from updates
+// applied to it.
+func Apply(db *sql.DB, updates http.FileSystem) error {
 	files, err := updates.Open("/")
 	if err != nil {
-		return nil, fmt.Errorf("open updates: %w", err)
+		return fmt.Errorf("open updates: %w", err)
 	}
 
 	list, err := files.Readdir(0)
 	if err != nil {
-		return nil, fmt.Errorf("listing updates: %w", err)
+		return fmt.Errorf("listing updates: %w", err)
 	}
 
 	if len(list) < 1 {
-		return nil, InvalidUpdateFilesError(fmt.Errorf("no update files in given directory"))
+		return InvalidUpdateFilesError(fmt.Errorf("no update files in given directory"))
 	}
 
 	// Ensure no subdirectories exist and names are valid
 	for _, file := range list {
 		if file.IsDir() {
-			return nil, InvalidUpdateFilesError(
+			return InvalidUpdateFilesError(
 				fmt.Errorf("updates should only contain files: %s is a directory", file.Name()),
 			)
 		}
 		if !updateFileMask.MatchString(file.Name()) {
-			return nil, InvalidUpdateFilesError(
+			return InvalidUpdateFilesError(
 				fmt.Errorf("file %s doesn't match regex %s", file.Name(), updateFileMask),
 			)
 		}
@@ -91,14 +104,14 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 		this, _ := strconv.ParseUint(strings.TrimSuffix(file.Name(), ".sql"), 10, 64)
 		if i == 0 {
 			if this != 1 {
-				return nil, InvalidUpdateFilesError(
+				return InvalidUpdateFilesError(
 					fmt.Errorf("first update file (%s) should match /^0*1.sql$/", file.Name()),
 				)
 			}
 		} else {
 			prev, _ := strconv.ParseUint(strings.TrimSuffix(list[i-1].Name(), ".sql"), 10, 64)
 			if this-prev != 1 {
-				return nil, InvalidUpdateFilesError(
+				return InvalidUpdateFilesError(
 					fmt.Errorf("update files must be in sequence (%s followed by %s)", file.Name(), list[i-1].Name()),
 				)
 			}
@@ -113,11 +126,11 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 		up.seq, _ = strconv.ParseUint(strings.TrimSuffix(file.Name(), ".sql"), 10, 64) // Has already worked
 		f, err := updates.Open(up.filename)
 		if err != nil {
-			return nil, fmt.Errorf("opening %s: %w", up.filename, err)
+			return fmt.Errorf("opening %s: %w", up.filename, err)
 		}
 		b, err := ioutil.ReadAll(f)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", up.filename, err)
+			return fmt.Errorf("reading %s: %w", up.filename, err)
 		}
 		up.contents = string(b)
 		s := sha1.Sum(b)
@@ -125,22 +138,15 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 		available = append(available, up)
 	}
 
-	db, err := sql.Open(driverName, dataSourceName)
+	tx, err := db.Begin()
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	// Close the DB on return if we have failed
-	failed := false
-	defer func() {
-		if failed {
-			db.Close()
-		}
-	}()
+	defer tx.Rollback() // Call tx.Commit() first on success
 
 	schemaTableExists := true
 	var applied []update
-	rows, err := db.Query(`SELECT filename, seq, sha1 FROM schema_updates ORDER BY seq ASC;`)
+	rows, err := tx.Query(`SELECT filename, seq, sha1 FROM schema_updates ORDER BY seq ASC;`)
 	if err != nil {
 		schemaTableExists = false
 	} else {
@@ -149,8 +155,7 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 		for rows.Next() {
 			var up update
 			if err := rows.Scan(&up.filename, &up.seq, &up.sha1); err != nil {
-				failed = true
-				return nil, fmt.Errorf("reading applied updates: %w", err)
+				return fmt.Errorf("reading applied updates: %w", err)
 			}
 			applied = append(applied, up)
 		}
@@ -159,20 +164,17 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 	// Check that applied updates match available updates
 	for _, up := range applied {
 		if len(available) == 0 {
-			failed = true
-			return nil, UpdateSchemaError(
+			return UpdateSchemaError(
 				fmt.Errorf("unknown update %d already applied", up.seq),
 			)
 		}
 		if up.seq != available[0].seq {
-			failed = true
-			return nil, UpdateSchemaError(
+			return UpdateSchemaError(
 				fmt.Errorf("update %d seen instead of expected %d", up.seq, available[0].seq),
 			)
 		}
 		if up.sha1 != available[0].sha1 {
-			failed = true
-			return nil, UpdateSchemaError(fmt.Errorf(
+			return UpdateSchemaError(fmt.Errorf(
 				"checksum of applied update %d (%s) does not match expected (%s)",
 				up.seq,
 				up.sha1,
@@ -183,47 +185,31 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 		available = available[1:]
 	}
 
-	updatesFailed := false
-	tx, err := db.Begin()
-	if err != nil {
-		failed = true
-		return nil, UpdateSchemaError(fmt.Errorf("begin tx: %w", err))
-	}
-	defer func() {
-		if updatesFailed {
-			tx.Rollback()
-		}
-	}()
-
 	// Create schema_updates table if it is missing
 	if !schemaTableExists {
 		if _, err := tx.Exec(createSchemaUpdates); err != nil {
-			updatesFailed = true
-			return nil, UpdateSchemaError(fmt.Errorf("create schema table: %w", err))
+			return UpdateSchemaError(fmt.Errorf("create schema table: %w", err))
 		}
 	}
 
 	// Apply each missing update
 	for _, up := range available {
 		if _, err := tx.Exec(string(up.contents)); err != nil {
-			updatesFailed = true
-			return nil, UpdateSchemaError(
+			return UpdateSchemaError(
 				fmt.Errorf("apply update %d (%s): %w", up.seq, up.filename, err),
 			)
 		}
 		_, err = tx.Exec(insertSchemaUpdate, up.filename, up.seq, up.sha1, time.Now(), up.contents)
 		if err != nil {
-			updatesFailed = true
-			return nil, UpdateSchemaError(
+			return UpdateSchemaError(
 				fmt.Errorf("record update %d (%s): %w", up.seq, up.filename, err),
 			)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		updatesFailed = true
-		return nil, UpdateSchemaError(fmt.Errorf("commit updates: %w", err))
+		return UpdateSchemaError(fmt.Errorf("commit updates: %w", err))
 	}
 
-	return db, nil
+	return nil
 }
