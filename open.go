@@ -22,6 +22,13 @@ type update struct {
 	contents  string
 }
 
+// DB represents the subset of sql.DB behaviour needed by this
+// library.
+type DB interface {
+	Close() error
+	Begin() (*sql.Tx, error)
+}
+
 // InvalidUpdateFilesError is used to indicate that an error relates to an improper set of DDL updates files being passed in.
 type InvalidUpdateFilesError error
 
@@ -63,7 +70,7 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 
 // Apply will ensure the given db has had all the .sql files from updates
 // applied to it.
-func Apply(db *sql.DB, updates http.FileSystem) error {
+func Apply(db DB, updates http.FileSystem) error {
 	files, err := updates.Open("/")
 	if err != nil {
 		return fmt.Errorf("open updates: %w", err)
