@@ -29,11 +29,13 @@ type DB interface {
 	Begin() (*sql.Tx, error)
 }
 
-// InvalidUpdateFilesError is used to indicate that an error relates to an improper set of DDL updates files being passed in.
+// InvalidUpdateFilesError is returned when unexpected files exist in
+// the http.Dir passed to Open or Apply.
 type InvalidUpdateFilesError error
 
-// UpdateSchemaError is used to indicate that something went wrong applying the updates, this usually means
-// that the target database is corrupted or has been modified out-of-band.
+// UpdateSchemaError is returned when the given SQL files cannot be
+// applied. Either the SQL statements contain errors, or the files
+// conflict with previosly applied files.
 type UpdateSchemaError error
 
 // TODO: Enforce unsigned int
@@ -54,8 +56,17 @@ VALUES(?, ?, ?, ?, ?);
 
 var updateFileMask = regexp.MustCompile(`^[0-9]+\.sql$`)
 
-// Open will open a new database given the driverNam and dataSourceName, and
-// ensure the created db has had all the .sql files from updates applied to it.
+// Open will open a new database given the driverName and
+// dataSourceName, and ensure the created db has had all the .sql
+// files from updates applied to it.
+//
+//  sql/
+//    0001.sql
+//    0002.sql
+//    0003.sql
+//
+//  schema := http.Dir("./sql")
+//  db, err := Open("sqlite3", ":memory:", schema)
 func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, error) {
 	db, err := sql.Open(driverName, dataSourceName)
 	if err != nil {
@@ -69,7 +80,7 @@ func Open(driverName, dataSourceName string, updates http.FileSystem) (*sql.DB, 
 }
 
 // Apply will ensure the given db has had all the .sql files from updates
-// applied to it.
+// applied to it. See Open.
 func Apply(db DB, updates http.FileSystem) error {
 	files, err := updates.Open("/")
 	if err != nil {
