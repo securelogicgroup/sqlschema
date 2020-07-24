@@ -38,20 +38,19 @@ type InvalidUpdateFilesError error
 // conflict with previosly applied files.
 type UpdateSchemaError error
 
-// TODO: Enforce unsigned int
 const createSchemaUpdates = `
-CREATE TABLE schema_updates (
-	filename string,
-	seq uint,
-	sha1 string,
-	timestamp string,
-	contents string
+CREATE TABLE IF NOT EXISTS schema_updates (
+	filename text,
+	seq integer,
+	sha1 text,
+	timestamp text,
+	contents text
 );
 `
 
 const insertSchemaUpdate = `
 INSERT INTO schema_updates(filename, seq, sha1, timestamp, contents)
-VALUES(?, ?, ?, ?, ?);
+VALUES($1, $2, $3, $4, $5);
 `
 
 var updateFileMask = regexp.MustCompile(`^[0-9]+\.sql$`)
@@ -162,11 +161,15 @@ func Apply(db DB, updates http.FileSystem) error {
 	}
 	defer tx.Rollback() // Call tx.Commit() first on success
 
-	schemaTableExists := true
+	// Create schema_updates table if it is missing
+	if _, err := tx.Exec(createSchemaUpdates); err != nil {
+		return UpdateSchemaError(fmt.Errorf("create schema table: %w", err))
+	}
+
 	var applied []update
 	rows, err := tx.Query(`SELECT filename, seq, sha1 FROM schema_updates ORDER BY seq ASC;`)
 	if err != nil {
-		schemaTableExists = false
+		return UpdateSchemaError(fmt.Errorf("check existing updates: %w", err))
 	} else {
 		defer rows.Close()
 		// Build list of applied updates
@@ -201,13 +204,6 @@ func Apply(db DB, updates http.FileSystem) error {
 		}
 		// Drop first available: it has already been applied
 		available = available[1:]
-	}
-
-	// Create schema_updates table if it is missing
-	if !schemaTableExists {
-		if _, err := tx.Exec(createSchemaUpdates); err != nil {
-			return UpdateSchemaError(fmt.Errorf("create schema table: %w", err))
-		}
 	}
 
 	// Apply each missing update
