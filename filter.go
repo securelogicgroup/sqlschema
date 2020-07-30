@@ -7,10 +7,6 @@ import (
 
 // Return updates list without updates that have already been applied.
 func filter(updates []update, tx *sql.Tx) ([]update, error) {
-	// Create schema_updates table if it is missing
-	if _, err := tx.Exec(createSchemaUpdates); err != nil {
-		return nil, UpdateSchemaError(fmt.Errorf("create schema table: %w", err))
-	}
 
 	var applied []update
 	rows, err := tx.Query(`SELECT filename, seq, sha1 FROM schema_updates ORDER BY seq ASC;`)

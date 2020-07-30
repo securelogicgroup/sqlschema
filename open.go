@@ -86,6 +86,10 @@ func Apply(db DB, dir http.FileSystem) error {
 	}
 	defer tx.Rollback() // Call tx.Commit() first on success
 
+	if _, err := tx.Exec(createSchemaUpdates); err != nil {
+		return UpdateSchemaError(fmt.Errorf("create schema table: %w", err))
+	}
+
 	pending, err := filter(available, tx)
 	if err != nil {
 		return err
@@ -115,6 +119,10 @@ func ApplyUnsafe(db DB, dir http.FileSystem) error {
 		return err
 	}
 	defer tx.Rollback() // Call tx.Commit() first on success
+
+	if _, err := tx.Exec(createSchemaUpdates); err != nil {
+		return UpdateSchemaError(fmt.Errorf("create schema table: %w", err))
+	}
 
 	if err := apply(available, tx); err != nil {
 		return err
