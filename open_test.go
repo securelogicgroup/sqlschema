@@ -222,3 +222,18 @@ func TestOpenSchemaUpdatesEntriesInvalidChecksumFails(t *testing.T) {
 		t.Errorf("expected Open() to fail with UpdateSchemaError")
 	}
 }
+
+func TestSchemaReapplyWithMultipleFiles(t *testing.T) {
+	f := http.Dir("./test/correct_entries")
+	db, err := Open("sqlite3", "file:test.db?mode=memory", f)
+	if err != nil {
+		t.Errorf("expected Open() to succeed but failed with error: %v", err)
+
+	}
+	defer db.Close()
+
+	if err = Apply(db, f); err != nil {
+		t.Errorf("expected Apply() to succeed but failed with error: %v", err)
+	}
+
+}

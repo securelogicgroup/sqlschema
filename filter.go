@@ -25,28 +25,26 @@ func filter(updates []update, tx *sql.Tx) ([]update, error) {
 	}
 
 	remaining := make([]update, len(updates))
-	for i := range updates {
-		remaining[i] = updates[i]
-	}
+	copy(remaining, updates)
 
 	// Check that applied updates match available updates
-	for _, up := range applied {
+	for i, up := range applied {
 		if len(updates) == 0 {
 			return nil, UpdateSchemaError(
 				fmt.Errorf("unknown update %d already applied", up.seq),
 			)
 		}
-		if up.seq != updates[0].seq {
+		if up.seq != updates[i].seq {
 			return nil, UpdateSchemaError(
-				fmt.Errorf("update %d seen instead of expected %d", up.seq, updates[0].seq),
+				fmt.Errorf("update %d seen instead of expected %d", up.seq, updates[i].seq),
 			)
 		}
-		if up.sha1 != updates[0].sha1 {
+		if up.sha1 != updates[i].sha1 {
 			return nil, UpdateSchemaError(fmt.Errorf(
 				"checksum of applied update %d (%s) does not match expected (%s)",
 				up.seq,
 				up.sha1,
-				updates[0].sha1,
+				updates[i].sha1,
 			))
 		}
 		remaining = remaining[1:]
